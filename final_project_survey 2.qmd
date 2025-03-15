@@ -1,0 +1,1325 @@
+---
+title: "Survey Methodology II - Final Group Project : Discrimination in the EU"
+author: 
+  - "Marco Boso"
+  - "Jia Lin"
+  - "Yijia Lin"
+  - "Linghan Zheng"
+format: 
+  html:
+    embed-resources: true
+    theme: cayman
+editor: visual
+---
+
+## Required packages
+
+```{r, message=FALSE, warning=FALSE}
+library(haven)
+library(dplyr)
+library(countrycode)
+library(readr)
+library(tidyr)
+library(stringr)
+library(mice)
+library(readr)
+library(readxl)
+library(missForest)
+library(glmnet)
+library(pscl)
+library(caret)
+library(pROC)
+library(lme4)
+library(MuMIn)
+library(ggplot2)
+library(fastDummies)
+library(randomForest)
+library(future)
+library(parallel)
+```
+
+## Data Cleaning
+
+```{r}
+data <- read_dta("ZA7575.dta")
+```
+
+```{r}
+data_clean <- data |> 
+    dplyr::select(-studyno1, -studyno2, -doi, -version, -edition, -survey, -q1_30, -gen3)
+
+nationality_cols <- grep("^q1_\\d+$", names(data_clean), value = TRUE)
+nationality_labels <- sapply(nationality_cols, function(x) attr(data[[x]], "label"))
+
+data_clean <- data_clean |> 
+  rowwise() |> 
+  mutate(nationality = paste(nationality_labels[c_across(all_of(nationality_cols)) == 1], collapse = ", ")) |> 
+  ungroup() 
+
+data_clean <- data_clean[, setdiff(names(data_clean), nationality_cols)] |> 
+   relocate(nationality, .after = isocntry)
+
+data_clean$nationality <- str_to_title(str_replace(data_clean$nationality, "NATIONALITY: ", ""))
+data_clean<-data_clean |> 
+  mutate(nationality = str_replace_all(nationality, "Nationality: ", "")) 
+
+```
+
+```{r}
+generation_cols <- grep("^gen\\d+$", names(data_clean), value = TRUE)
+generation_labels <- sapply(generation_cols, function(x) attr(data_clean[[x]], "label"))
+
+data_clean <- data_clean %>%
+  pivot_longer(cols = all_of(generation_cols), 
+               names_to = "generation", 
+               values_to = "value") %>%
+  filter(value == 1) %>%  
+  dplyr::select(-value)  |> 
+  relocate(generation, .after = nationality)
+
+data_clean$generation <- generation_labels[data_clean$generation]
+data_clean$generation <- str_to_lower(str_replace(data_clean$generation, "GENERATION ", ""))
+```
+
+```{r}
+data_clean <- data_clean |> 
+  dplyr::select(c(caseid:isocntry,nationality,generation,d11,d70,polintr,qa1,qa16_1:qa16_4,qa17,qb2_2,qb2_3,sd1_1:sd1_8,sd3,qc1_1:qc1_10,qc6_1,qc6_2,qc6_3,qc6_4,qc6_5,qc6_6,qc6_7,qc6_8,qc6_10,qc6_11,qc7,qc9_1:qc9_2,qc9_3,qc9_5,qc9_6,qc6_7,qc6_9,qc9_10,qc9_11,qc11_1:qc11_2,qc11_3,qc11_4,qc11_6,qc15_1:qc15_3,qc16_1,qc17_1:qc17_5,qc17_6,qc17_7,qc18_1,qc18_2,qc18_3,qc19,qc20,d1,d10,d8,d63))
+
+```
+
+```{r}
+data_clean<- data_clean |> 
+  rename(age = d11, life_satisfaction = d70, indibenift=qa1,trust_eu_trade_policy_transparency = qa17, religion_denomination = sd3)
+
+data_clean <- data_clean |> 
+  rename(
+    efforts_fight_discrimination = qc7, 
+    transgender_change_documents = qc19,  
+    third_gender_option = qc20, 
+    political_orientation = d1,  
+    gender = d10, 
+    age_education = d8
+  )
+
+data_clean <- data_clean |> 
+  rename(
+    contact_ethnic_origin = sd1_1,  
+    contact_skin_colour = sd1_2, 
+    contact_lgb = sd1_4, 
+    contact_religion = sd1_6,  
+    contact_transgender = sd1_7,  
+    discrimination_gender = qc1_9,  
+    discrimination_intersex = qc1_10,  
+    discrimination_ethnic_origin = qc1_1,  
+    discrimination_skin_colour = qc1_2, 
+    discrimination_sexual_orientation = qc1_4,  
+    discrimination_religion = qc1_6,  
+    discrimination_transgender = qc1_8,  
+    elected_woman = qc6_1,  
+    elected_homosexual_bisexual = qc6_2, 
+    elected_ethnic_origin = qc6_3,  
+    elected_skin_colour = qc6_4,  
+    elected_transgender = qc6_10,  
+    elected_intersex = qc6_11  
+  )
+
+data_clean <- data_clean |> 
+  rename(
+    lgb_rights_equal_heterosexual = qc15_1,  
+    lgb_no_problem_same_sex_relationship = qc15_2,  
+    lgb_allow_same_sex_marriage = qc15_3,  
+
+    census_ethnic_origin = qc11_1,  
+    census_skin_colour = qc11_2,  
+    census_religion_beliefs = qc11_4,  
+    census_sexual_orientation = qc11_6,  
+
+    diversity_promotion_ethnic_origin = qc9_1,  
+    diversity_promotion_skin_colour = qc9_2,  
+    diversity_promotion_sexual_orientation = qc9_5,  
+    diversity_promotion_transgender = qc9_10,  
+    diversity_promotion_intersex = qc9_11  
+  )
+
+data_clean <- data_clean |> 
+  rename(
+    business_non_eu_invest = qa16_1,  
+    business_non_eu_buy = qa16_2,  
+    business_domestic_invest_outside = qa16_3, 
+    business_domestic_buy_inside = qa16_4,  
+    energy_clean = qb2_2,  
+    energy_affordable = qb2_3,  
+    contact_roma = sd1_3, 
+    contact_disabled = sd1_5,  
+    contact_intersex = sd1_8,  
+    discrim_roma = qc1_3,  
+    discrim_age = qc1_5,  
+    discrim_disability = qc1_7  
+  )
+
+data_clean <- data_clean |> 
+  rename(
+    elected_politician_roma = qc6_5,  
+    elected_politician_young = qc6_6,  
+    elected_politician_old = qc6_7,  
+    elected_politician_disabled = qc6_8, 
+    elected_politician_diff_religion = qc6_9,
+
+    diversity_promotion_roma = qc9_3, 
+    diversity_promotion_old = qc9_6,  
+
+    census_info_disability = qc11_3,  
+    attitudes_roma_integration = qc16_1,  
+
+    school_inform_diversity_religion = qc17_1, 
+    school_inform_diversity_ethnic = qc17_2,  
+    school_inform_diversity_sexual_orientation = qc17_3,  
+    school_inform_diversity_transgender = qc17_4, 
+    school_inform_diversity_intersex = qc17_5,  
+    school_inform_diversity_disability = qc17_6,  
+    school_inform_diversity_roma = qc17_7,  
+
+    public_affection_man_woman = qc18_1, 
+    public_affection_two_men = qc18_2,  
+    public_affection_two_women = qc18_3,  
+
+    social_class_self_assessment = d63  
+  )
+data_clean <- data_clean |> 
+  mutate(religion_denomination = as.factor(religion_denomination))
+
+
+data_clean <- data_clean |> 
+  separate(nationality, into = c("nationality", "second nationality"), sep = ", ", fill = "right")
+
+# 1st FUNCTION TO TRANSFORM THE RESULTS OF THE QUESTIONNAIRE (5 choices -> 1-4, 5 is DK; where to apply it: trust_eu_trade_policy_transparency, life_satisfaction,)
+generate_positive_variable <- function(data, varname) {
+  
+  var_sym <- sym(varname)
+  
+  # new variable name 
+  positive_ind_col <- paste0("positive_", varname, "_ind")
+  
+  # binary column
+  data <- data |> 
+    mutate(
+      !!positive_ind_col := ifelse(!!var_sym %in% c(1, 2), 1, 0)
+    )
+  
+  return(data)
+}
+
+variables_list_1 <- c("life_satisfaction", "indibenift", "trust_eu_trade_policy_transparency", 
+                    "lgb_rights_equal_heterosexual", "lgb_no_problem_same_sex_relationship", "lgb_allow_same_sex_marriage", 
+                    "census_ethnic_origin", "census_skin_colour", "census_religion_beliefs", "census_sexual_orientation", 
+                    "business_non_eu_invest", "business_non_eu_buy", "business_domestic_invest_outside", "business_domestic_buy_inside", 
+                    "energy_clean", "energy_affordable", "census_info_disability", "attitudes_roma_integration", 
+                    "school_inform_diversity_religion", "school_inform_diversity_ethnic", "school_inform_diversity_sexual_orientation", 
+                    "school_inform_diversity_transgender", "school_inform_diversity_intersex", "school_inform_diversity_disability", 
+                    "school_inform_diversity_roma")
+
+for (var in variables_list_1) {
+  data_clean <- generate_positive_variable(data_clean, var)
+}
+
+# 2nd FUNCTION TO TRANSFORM THE RESULTS OF THE QUESTIONNAIRE (12 choices -> 1-10, 11 = indifferent, 12 = DK; where to apply it:  )
+generate_comfortable_variable <- function(data, varname) {
+  
+  var_sym <- sym(varname)
+  
+  # new variable name
+  comfortable_ind_col <- paste0("comfortable_", varname, "_ind")
+  
+  # create the binary column
+  data <- data %>%
+    mutate(
+      !!comfortable_ind_col := ifelse(!!var_sym %in% c(7, 8, 9, 10), 1, 0)
+    )
+  
+  return(data)
+}
+
+variables_list_2 <- c("efforts_fight_discrimination", "political_orientation", "elected_woman", 
+                    "elected_homosexual_bisexual", "elected_ethnic_origin", "elected_skin_colour", 
+                    "elected_transgender", "elected_intersex", "elected_politician_roma", 
+                    "elected_politician_young", "elected_politician_old", "elected_politician_disabled", 
+                    "elected_politician_diff_religion", "public_affection_man_woman", "public_affection_two_men", 
+                    "public_affection_two_women")
+
+for (var in variables_list_2) {
+  data_clean <- generate_comfortable_variable(data_clean, var)
+}
+
+
+# 3rd FUNCTION TO TRANSFORM THE RESULTS OF THE QUESTIONNAIRE (6 choices -> 1-4, 5 = non existent, 6 = DK; where to apply it:  )
+generate_think_spread_variable <- function (data, varname) {
+  
+  var_sym <- sym(varname)
+  
+  # new variable name
+  think_spread_col <- paste0("think_spread_", varname)
+  
+  # create binary column
+  data <- data %>%
+    mutate(
+      !!think_spread_col := ifelse(!!var_sym %in% c(1, 2), 1, 0)
+    )
+  
+  return(data)
+}
+
+variables_list_3 <- c("discrimination_gender", "discrimination_intersex", "discrimination_ethnic_origin",
+                    "discrimination_skin_colour", "discrimination_sexual_orientation", "discrimination_religion",
+                    "discrimination_transgender", "discrim_roma", "discrim_age", "discrim_disability")
+
+for (var in variables_list_3) {
+  data_clean <- generate_think_spread_variable(data_clean, var)
+}
+
+# 4th FUNCTION TO TRANSFORM THE RESULTS OF THE QUESTIONNAIRE (yes-no response; where to apply it:  )
+generate_yes_variable <- function(data, varname) {
+  
+  var_sym <- sym(varname)
+  
+  # new variable name
+  yes_col <- paste0("yes_", varname)
+  
+  # create binary column
+  data <- data %>%
+    mutate(
+      !!yes_col := ifelse(!!var_sym %in% c(1), 1, 0)
+    )
+  
+  return(data)
+}
+
+variables_list_4 <- c("transgender_change_documents", "third_gender_option", "gender", 
+                    "contact_ethnic_origin", "contact_skin_colour", "contact_lgb", 
+                    "contact_religion", "contact_transgender", "contact_roma", 
+                    "contact_disabled", "contact_intersex")
+
+for (var in variables_list_4) {
+  data_clean <- generate_yes_variable(data_clean, var)
+}
+
+# 5th FUNCTION TO TRANSFORM THE RESULTS OF THE QUESTIONNAIRE (7 choices)
+generate_enought_promote_variable <- function(data, varname) {
+  
+  var_sym <- sym(varname)
+  
+  # new variable name
+  enought_promote_col <- paste0("enought_promote", varname)
+  
+  # create binary column
+  data <- data %>%
+    mutate(
+      !!enought_promote_col := ifelse(!!var_sym %in% c(1, 2), 1, 0)
+    )
+  
+  return(data)
+}
+
+variables_list_5 <- c("diversity_promotion_ethnic_origin", "diversity_promotion_skin_colour", 
+                    "diversity_promotion_sexual_orientation", "diversity_promotion_transgender", 
+                    "diversity_promotion_intersex", "diversity_promotion_roma", 
+                    "diversity_promotion_old")
+
+for (var in variables_list_5) {
+  data_clean <- generate_enought_promote_variable(data_clean, var)
+}
+
+# FUNCTION FOR SOCIAL CLASS
+generate_social_class_variable <- function(data, varname) {
+  
+  var_sym <- sym(varname)
+  
+  class_labels <- c(
+    "working_class", 
+    "lower_middle_class", 
+    "middle_class", 
+    "upper_middle_class", 
+    "higher_class", 
+    "other", 
+    "none", 
+    "refusal", 
+    "dk"
+  )
+  
+  for (i in 1:length(class_labels)) {
+    
+    new_var_name <- paste0(class_labels[i], "_ind")
+    
+    data <- data %>%
+      mutate(!!new_var_name := ifelse(!!var_sym == i, 1, 0))
+  }
+  
+  return(data)
+}
+
+data_clean <- generate_social_class_variable(data_clean, "social_class_self_assessment")
+
+drop_columns <- c(
+  variables_list_1,
+  variables_list_2,
+  variables_list_3,
+  variables_list_4,
+  variables_list_5,
+  "social_class_self_assessment"
+)
+
+data_clean <- data_clean |>  dplyr::select(-all_of(drop_columns))
+
+
+```
+
+```{r}
+na_proportion <- colMeans(is.na(data_clean))
+na_proportion
+```
+
+Since the NA percetage of item ´most_experienced_discrimination´ is close to 85%, we eliminated it.
+
+```{r}
+data_clean <- data_clean |> 
+  dplyr::select(-c(caseid, serialid, tnscntry))
+```
+
+## Adding new variables
+
+GDP
+
+```{r}
+EU_counties <- selected_countries <- c('Poland', 'Austria', 'Italy', 'Spain', 'United Kingdom', 'France', 'Portugal', 'Belgium', 'Netherlands', 'Luxembourg', 'Denmark', 'Germany', 'Czechia', 'Slovak Republic', 'Hungary', 'Croatia', 'Slovenia', 'Greece', 'Romania', 'Bulgaria', 'Lithuania', 'Latvia', 'Estonia', 'Finland', 'Sweden', 'Ireland', 'Cyprus', 'Malta')
+
+data_gdp <- read_csv("API_NY.GDP.MKTP.CD_DS2_en_csv_v2_76261.csv", skip = 4) |> 
+  dplyr::select(`Country Name`, `2023`) |> 
+  filter(`Country Name` %in% EU_counties) |> 
+  rename ('GDP' = '2023', 'Country' = 'Country Name')
+```
+
+HDI
+
+```{r}
+data_hdi <- read_excel("HDR23-24_Statistical_Annex_HDI_Table.xlsx") |> 
+  dplyr::select('Country',`Gross national income (GNI) per capita`, `Mean years of schooling`, `Expected years of schooling`, `Life expectancy at birth`, `Human Development Index (HDI)`) |> 
+  mutate(`Country` = case_when(
+    `Country` == "Slovakia" ~ "Slovak Republic",
+    TRUE ~ `Country`
+  )) |> 
+    mutate(across(-`Country`, as.numeric)) |>
+  filter(`Country` %in% EU_counties)
+```
+
+GDI
+
+```{r}
+data_gdi <- read_excel("HDR23-24_Statistical_Annex_GDI_Table.xlsx") |> 
+  mutate(`Country` = case_when(
+    `Country` == "Slovakia" ~ "Slovak Republic",
+    TRUE ~ `Country`
+  )) |> 
+  mutate(across(-`Country`, as.numeric)) |> 
+  filter(`Country` %in% EU_counties)
+  
+```
+
+I-HDI
+
+```{r}
+data_ihdi <- read_excel("HDR23-24_Statistical_Annex_I-HDI_Table.xlsx") |> 
+  dplyr::select('Country','Inequality-adjusted HDI (IHDI)', 'Inequality in income (%)', 'Income poorest 40 percent (%)', 'Income richest 10 percent (%)', 'Income richest 1 percent (%)', 'Gini coefficient') |> 
+   mutate(`Country` = case_when(
+    `Country` == "Slovakia" ~ "Slovak Republic",
+    TRUE ~ `Country`
+  )) |> 
+  mutate(across(-`Country`, as.numeric)) |> 
+  filter(`Country` %in% EU_counties)
+  
+```
+
+Data about immigration and the population
+
+```{r}
+data_pop <- read_excel("migr_pop3ctb__custom_15705306_page_spreadsheet.xlsx", 
+    sheet = "Sheet 1", skip = 11) |> 
+  rename ('Country' = 'GEO (Labels)') |> 
+  mutate(`Country` = case_when(
+    `Country` == "Slovakia" ~ "Slovak Republic", 
+    TRUE ~ `Country`
+  )) |> 
+  mutate(`% immigrants` = (`n. of immigrants` / `pop.`) * 100)
+
+```
+
+Level of freedom
+
+```{r}
+data_freedom <- read_excel("All_data_FIW_2013-2024.xlsx", 
+    sheet = "FIW13-25", skip = 1) |> 
+  filter(Edition == 2025) |> 
+  dplyr::select('Country/Territory','Total') |> 
+  rename ('Country' = 'Country/Territory', "Aggregate level of freedom" = 'Total') |> 
+  mutate(`Country` = case_when(
+    `Country` == "Slovakia" ~ "Slovak Republic",
+    `Country` == "Czech Republic" ~ "Czechia",
+    TRUE ~ `Country`
+  )) |> 
+   filter(`Country` %in% EU_counties)
+```
+
+Level of individuality
+
+```{r}
+data_individuality <- read_delim("6-dimensions-for-website-2015-08-16.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE) |> 
+   dplyr::select('country','idv') |> 
+   rename ('Country' = 'country') |>
+   mutate(`Country` = case_when(
+    `Country` == "Slovak Rep" ~ "Slovak Republic",
+    `Country` == "Czech Rep" ~ "Czechia",
+    `Country` == "Great Britain" ~ "United Kingdom",
+    TRUE ~ `Country`
+  )) |> 
+  mutate(across(`idv`, as.numeric)) |> 
+  filter(`Country` %in% EU_counties)
+
+```
+
+Number of laws adopted in favor of trans people's rights
+
+```{r}
+data_laws <- read_csv("2024-rainbow-map-data-legal-gender-recognition.csv") 
+
+data_laws <- data_laws |>
+  slice(-c(1,2)) |> 
+  mutate(sum_laws = rowSums(across(3:last_col(), as.numeric))) |> 
+  rename(Country=...2) |> 
+  mutate(Country = case_when(
+    Country == "Slovakia" ~ "Slovak Republic",
+    TRUE ~ Country  
+  )) |> 
+  select(-1, -c(3:17))
+```
+
+## Join country-level additional data sets
+
+```{r}
+EU_data <-  data_pop |> 
+  left_join(data_gdp, by = "Country") |> 
+  left_join(data_hdi, by = "Country") |> 
+  left_join(data_gdi, by = "Country") |> 
+  left_join(data_ihdi, by = "Country") |> 
+  left_join(data_freedom, by = "Country") |>
+  left_join(data_individuality, by = "Country")|> 
+  left_join(data_laws, by = "Country")
+
+EU_data <- EU_data |> 
+  mutate(`Country` = case_when(
+    `Country` == "Slovak Republic" ~ "Slovakia",
+    `Country` == "Czechia" ~ "Czech Republic",
+    `Country` == "Cyprus" ~ "Cyprus Republic",
+    TRUE ~ `Country`
+  )) 
+```
+
+```{r}
+na_proportion1 <- colMeans(is.na(EU_data))
+na_proportion1
+```
+
+Solving the NAs in idv
+
+```{r}
+EU_data$Country <- as.factor(EU_data$Country)
+imputed_result <- missForest(as.data.frame(EU_data), ntree = 28)
+
+missForest_imputed <- data.frame(
+  original = EU_data$idv,
+  imputed_missForest = imputed_result$ximp$idv
+)
+
+head(missForest_imputed, 28)
+
+EU_data$idv <- imputed_result$ximp$idv
+```
+
+## Join country-level data to survey data
+
+```{r}
+setdiff(unique(data_clean$nationality), unique(EU_data$Country))
+
+EU_data <- EU_data |> 
+  mutate(Country = as.character(Country))
+
+data_joint <- data_clean |> 
+  left_join(EU_data, by = c("nationality" = "Country"))
+
+```
+
+### Data imbalance check
+
+The distribution of support and not support is balanced, with both categories having similar proportions. Therefore, no special handling for imbalanced data is required.
+
+```{r}
+table(data_joint$yes_transgender_change_documents)
+
+prop.table(table(data_joint$yes_transgender_change_documents))
+```
+
+## Question 1: Explaining Cross-Country Differences in Support Levels
+
+## Logistic regression for data set with the individual response
+
+#### Feature selection by elastic_net
+
+```{r}
+
+data_clean_numeric <- data_clean[, sapply(data_clean, is.numeric)]
+
+x <- as.matrix(data_clean_numeric[, -which(names(data_clean_numeric) == "yes_transgender_change_documents")])
+
+x_scaled <- as.matrix(scale(x))
+
+y <- data_clean_numeric$yes_transgender_change_documents
+
+set.seed(123) 
+elastic_net_model <- cv.glmnet(
+  x_scaled, y,
+  alpha = 0.5,                
+  family = "binomial",      
+  nfolds = 5
+)
+
+best_lambda <- elastic_net_model$lambda.min
+
+elastic_net_coefficients <- coef(elastic_net_model, s = "lambda.min")
+
+non_zero_vars <- rownames(elastic_net_coefficients)[elastic_net_coefficients[, 1] != 0]
+non_zero_vars <- non_zero_vars[non_zero_vars != "(Intercept)"]
+
+print(non_zero_vars)
+```
+
+##### Check for multicollinearity
+
+```{r}
+selected_vars <- non_zero_vars 
+
+df_selected <- data_clean |> 
+   dplyr::select(all_of(selected_vars), yes_transgender_change_documents)
+
+lm_model <- lm(yes_transgender_change_documents ~ ., data = df_selected)
+car::vif(lm_model)
+```
+
+We have a \> 5 results for the variables 'positive_school_inform_diversity_transgender_ind' and 'positive_school_inform_diversity_intersex_ind' that tells us that we have a mild problem of multicollinearity with this two. To solve the probelm we can decide to drop the two variables.
+
+```{r}
+df_selected_reduced <- df_selected |> 
+  dplyr::select(-positive_school_inform_diversity_transgender_ind,
+                -positive_school_inform_diversity_intersex_ind)
+
+lm_model_reduced <- lm(yes_transgender_change_documents ~ ., data = df_selected_reduced)
+car::vif(lm_model_reduced)
+
+```
+
+Now all VIFs are below 5, which means multicollinearity is no longer a problem.
+
+#### Log regression
+
+```{r}
+logit_model <- glm(yes_transgender_change_documents ~ ., 
+                   data = df_selected_reduced, 
+                   family = binomial)
+
+summary(logit_model)
+
+```
+
+```{r}
+exp(coef(logit_model))
+
+```
+
+From the odds ratio we can see that we can see that all the variables with a \> 1 value have a positive effects of the support for changing the gender in the document of transgender people. We can see that 'positive_indibenift_ind' with a value of 1.4474 have a positive meaning that individuals who perceive personal benefit from international trade are \~45% more likely to support trans right in that field. 'positive_lgb_rights_equal_heterosexual_ind' with a value of 1.5415 meaning that supporting LGB equal rights increases the odds by \~54%. 'positive_lgb_no_problem_same_sex_relationship_ind' with 1.4609meaning that people with acceptance of same-sex relationships are \~46% more likely to support. 'positive_school_inform_diversity_sexual_orientation_ind' with a value of 1.4009 meaning that support for LGB diversity education increases the odds by \~40%. And that 'yes_contact_disabled' with a score of 1.1759 means that personal contact with disabled people increases odds by \~18%. On the other hand 'comfortable_public_affection_two_men' have a value of 0.8923 meaning tha people that are less comfort with same-sex public affection tend to show lower support for trans right.
+
+```{r}
+anova(logit_model, test = "Chisq")
+```
+
+```{r}
+predicted_probs <- predict(logit_model, type = "response")
+
+predicted_classes <- ifelse(predicted_probs > 0.5, 1, 0)
+
+table(Predicted = predicted_classes, Actual = df_selected_reduced$yes_transgender_change_documents)
+
+```
+
+From this confusion matrix we can see that the model have an overall accuracy of \~81% and a precision \~83% meaning that when the model predicts someone supports transgender change documents, it is correct 83% of the time.
+
+### Train-test
+
+We will pick the variable that the log regression have selected as the most important one for the model
+
+```{r}
+significant_vars <- c(
+  "country",
+  "positive_life_satisfaction_ind",
+  "positive_indibenift_ind",
+  "positive_trust_eu_trade_policy_transparency_ind",
+  "positive_lgb_rights_equal_heterosexual_ind",
+  "positive_lgb_no_problem_same_sex_relationship_ind",
+  "positive_lgb_allow_same_sex_marriage_ind",
+  "positive_census_ethnic_origin_ind",
+  "positive_business_non_eu_invest_ind",
+  "positive_business_non_eu_buy_ind",
+  "positive_business_domestic_invest_outside_ind",
+  "positive_energy_affordable_ind",
+  "positive_attitudes_roma_integration_ind",
+  "positive_school_inform_diversity_religion_ind",
+  "positive_school_inform_diversity_ethnic_ind",
+  "positive_school_inform_diversity_sexual_orientation_ind",
+  "positive_school_inform_diversity_disability_ind",
+  "positive_school_inform_diversity_roma_ind",
+  "comfortable_efforts_fight_discrimination_ind",
+  "comfortable_political_orientation_ind",
+  "comfortable_elected_ethnic_origin_ind",
+  "comfortable_elected_skin_colour_ind",
+  "comfortable_elected_transgender_ind",
+  "comfortable_elected_intersex_ind",
+  "comfortable_public_affection_man_woman_ind",
+  "comfortable_public_affection_two_women_ind",
+  "think_spread_discrimination_gender",
+  "think_spread_discrimination_skin_colour",
+  "think_spread_discrimination_sexual_orientation",
+  "think_spread_discrimination_transgender",
+  "yes_contact_skin_colour",
+  "yes_contact_religion",
+  "yes_contact_disabled",
+  "enought_promotediversity_promotion_ethnic_origin",
+  "enought_promotediversity_promotion_intersex",
+  "enought_promotediversity_promotion_roma"
+)
+```
+
+```{r}
+
+df_model <- data_clean |> 
+  dplyr::select(all_of(significant_vars), yes_transgender_change_documents)
+
+set.seed(123)  
+train_index <- createDataPartition(df_model$yes_transgender_change_documents, p = 0.7, list = FALSE)
+
+train_data <- df_model[train_index, ]
+test_data <- df_model[-train_index, ]
+
+logit_model <- glm(yes_transgender_change_documents ~ ., 
+                   data = train_data,
+                   family = binomial)
+
+predicted_probs <- predict(logit_model, newdata = test_data, type = "response")
+
+predicted_classes <- ifelse(predicted_probs > 0.5, 1, 0)
+
+confusionMatrix(factor(predicted_classes),
+                factor(test_data$yes_transgender_change_documents))
+
+```
+
+We can see that the model performs pretty well overall, with an accuracy of 74.41%. That means about three out of four predictions it makes are correct, which is decent—especially given the complexity of this kind of social data. The sensitivity (or recall) is 69.99%, meaning the model correctly identifies around 70% of people who said "YES" to transgender change documents. The specificity is 78.35%, which shows it’s even better at spotting the people who said "NO". When the model predicts a "YES", it’s right 74.60% of the time—that’s the precision. And when it predicts "NO", it’s correct about 74.00% of the time. The Kappa score is 0.48, which indicates there’s moderate agreement between what the model predicts and the actual responses—better than random guessing, but there’s still room to improve. The balanced accuracy comes out to 74.17%, which is helpful when you have an imbalance in your data. It tells us the model is handling both "YES" and "NO" classes fairly evenly. The McNemar’s test p-value is super low (1.83e-06), which suggests there’s a significant difference between false positives and false negatives. In simple terms, the model may be treating the two classes a bit differently, so it’s something to watch.
+
+```{r}
+roc_obj <- roc(test_data$yes_transgender_change_documents, predicted_probs)
+plot(roc_obj)
+auc(roc_obj)
+
+```
+
+The model performs well above chance at predicting who supports changing gender documents. The ROC curve shows a good balance between sensitivity and specificity, indicating that the model effectively distinguishes between individuals who support and those who do not support the change. The AUC provides a summary metric of the model’s ability to separate the two groups. Overall, these results suggest that the model is doing a pretty solid job.
+
+### Generalized linear mixed model for the individual response data set
+
+```{r}
+
+model_random_intercept <- glmer(
+  yes_transgender_change_documents ~ positive_life_satisfaction_ind + positive_indibenift_ind + positive_trust_eu_trade_policy_transparency_ind + 
+  (1 | nationality),   
+  data = data_clean,
+  family = binomial(link = "logit")
+)
+
+summary(model_random_intercept)
+
+
+```
+
+From the generalized linear mixed model, we can see that individuals who report higher life satisfaction are more likely to support changing gender markers on official documents. Specifically, the positive_life_satisfaction_ind variable has a significant and positive effect (estimate = 0.35), which suggests that being satisfied with life increases the likelihood of supporting this policy. Similarly, people who believe that international trade brings individual benefits (positive_indibenift_ind) show a strong positive association with support for transgender change documents. The estimate is 0.48, which makes this one of the strongest predictors in the model. It seems like a more open or positive view of globalization is linked to greater support for progressive social policies. Trust in the transparency of EU trade policy (positive_trust_eu_trade_policy_transparency_ind) also plays a role, although the effect size is smaller (estimate = 0.21). This suggests that trust in institutions might be related to higher support for gender-related rights. Looking at the random intercept for country, there’s variation in baseline support levels between countries. The variance (0.77) shows that in some countries, people are more supportive than in others, regardless of individual characteristics. Overall, all three predictors are highly significant, and the model does a good job of showing both individual-level effects and the influence of the broader national context by accounting for differences between countries.
+
+```{r}
+ranef_country <- ranef(model_random_intercept)$nationality
+
+ranef_country_df <- data.frame(
+  nationality = rownames(ranef_country),
+  effect = ranef_country[, "(Intercept)"]
+)
+
+ranef_country_df <- ranef_country_df |> 
+  arrange(effect)
+
+ggplot(ranef_country_df, aes(x = reorder(nationality, effect), y = effect)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Country-Level Random Intercepts (Nationality)",
+    subtitle = "Effect on Log-Odds of Supporting Transgender Change Documents",
+    x = "Nationality",
+    y = "Random Intercept Effect"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+
+model_random_slope <- glmer(
+  yes_transgender_change_documents ~ positive_life_satisfaction_ind + positive_indibenift_ind + positive_trust_eu_trade_policy_transparency_ind + 
+  (1 + positive_life_satisfaction_ind | nationality),   
+  data = data_clean,
+  family = binomial(link = "logit")
+)
+
+summary(model_random_slope)
+
+```
+
+The model shows that life satisfaction, perceived individual benefit from international trade, and trust in EU trade policy transparency are all significant predictors of support for changing gender on official documents. Importantly, the effect of life satisfaction varies across countries, with countries that are already more supportive showing a weaker relationship between life satisfaction and support. This highlights both individual and contextual (country-level) factors influencing attitudes towards transgender rights.
+
+```{r}
+glmm_model <- glmer(
+  yes_transgender_change_documents ~ positive_life_satisfaction_ind + positive_indibenift_ind + positive_trust_eu_trade_policy_transparency_ind +
+  positive_lgb_rights_equal_heterosexual_ind + positive_lgb_no_problem_same_sex_relationship_ind + 
+  positive_lgb_allow_same_sex_marriage_ind + positive_census_ethnic_origin_ind +
+  (1 + positive_life_satisfaction_ind | nationality), 
+  data = data_clean,
+  family = binomial(link = "logit")
+)
+
+summary(glmm_model)
+
+```
+
+Overall, the model shows that both personal attitudes and the national context matter. Individual life satisfaction, beliefs about trade, and inclusive social attitudes are all linked to support for transgender rights. At the same time, the country someone lives in shapes the baseline support and how these individual factors play out. I also added random slopes for life satisfaction, which helped capture more of these differences between countries. Countries aren’t just higher or lower in support overall—the impact of life satisfaction varies as well.
+
+```{r}
+glmm_model <- glmer(
+  yes_transgender_change_documents ~ 
+    positive_life_satisfaction_ind +
+    positive_indibenift_ind +
+    positive_trust_eu_trade_policy_transparency_ind +
+    positive_lgb_rights_equal_heterosexual_ind +
+    positive_lgb_no_problem_same_sex_relationship_ind +
+    positive_lgb_allow_same_sex_marriage_ind +
+    positive_census_ethnic_origin_ind +
+    positive_business_non_eu_invest_ind +
+    positive_business_non_eu_buy_ind +
+    positive_business_domestic_invest_outside_ind +
+    positive_energy_affordable_ind +
+    positive_attitudes_roma_integration_ind +
+    positive_school_inform_diversity_religion_ind +
+    positive_school_inform_diversity_ethnic_ind +
+    positive_school_inform_diversity_sexual_orientation_ind +
+    positive_school_inform_diversity_disability_ind +
+    positive_school_inform_diversity_roma_ind +
+    comfortable_efforts_fight_discrimination_ind +
+    comfortable_political_orientation_ind +
+    comfortable_elected_ethnic_origin_ind +
+    comfortable_elected_skin_colour_ind +
+    comfortable_elected_transgender_ind +
+    comfortable_elected_intersex_ind +
+    comfortable_public_affection_man_woman_ind +
+    comfortable_public_affection_two_women_ind +
+    think_spread_discrimination_gender +
+    think_spread_discrimination_skin_colour +
+    think_spread_discrimination_sexual_orientation +
+    think_spread_discrimination_transgender +
+    yes_contact_skin_colour +
+    yes_contact_religion +
+    yes_contact_disabled +
+    enought_promotediversity_promotion_ethnic_origin +
+    enought_promotediversity_promotion_intersex +
+    enought_promotediversity_promotion_roma +
+    (1 | nationality),
+  data = data_clean,
+  family = binomial(link = "logit")
+)
+
+summary(glmm_model)
+
+```
+
+```{r}
+ranef_country <- ranef(glmm_model)$nationality
+
+ranef_country_df <- data.frame(
+  nationality = rownames(ranef_country),
+  intercept_effect = ranef_country[, "(Intercept)"]
+)
+
+ggplot(ranef_country_df, aes(x = reorder(nationality, intercept_effect), y = intercept_effect)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Country-Level Random Intercepts (Nationality)",
+    x = "Nationality",
+    y = "Effect on Log-Odds of Supporting Transgender Change Documents"
+  ) +
+  theme_minimal()
+
+```
+
+In the latest model, we can see that the country-level random effects vary significantly, showing a broader spread than in earlier models. Countries like Malta and Spain stand out with higher-than-average support for transgender document change, while countries like Hungary and Bulgaria show much lower support. Compared to the earlier model, these differences are more pronounced, likely because the model accounts for more individual factors and includes a random slope for life satisfaction. This suggests that not only do country contexts matter, but also how personal factors interact with those contexts.
+
+## Logistic regression with both individual and country level data
+
+As previous research has shown, although a logistic regression model based solely on individual-level responses already performs well (with an accuracy of 81%), the generalized linear mixed model (GLMM), which accounts for country-level differences, reveals that a significant portion of the variability is explained by country-level factors rather than individual characteristics.
+
+Specifically, the variance of nationality as a **random effect** is 0.3619 in the last detailed glmm, resulting in an **Intraclass Correlation Coefficient (ICC) of 0.2657**. (Here the residual variance is assumed to be 1, since this is a binomial regression model, and ICC = σ_random² / (σ_residual²+σ_random² ) =This indicates that despite incorporating 64 individual-level variables, **26.57% of the variability can still be attributed to country-level factors.**
+
+Therefore, to better understand the reasons behind these country-level differences, **it is essential to incorporate specific country-level data**. These country-level data, including GDP, the freedom index, the HDI factor, etc. They are collected in *`EU_data`* and merged with individual responses into *`data_joint`*`.`
+
+### Feature selection by elastic net
+
+We set a elastic net with strong penalization as we have more variables than before.
+
+```{r}
+#We notice that glm can't  handel with factor variables such as religion denomination, so we will create dummy variables.
+data_joint2 <- data_joint |> 
+  dummy_cols(select_columns = "religion_denomination", remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+
+data_joint_numeric <- data_joint2[, sapply(data_joint2, is.numeric)]
+data_joint_numeric<- data_joint_numeric |> 
+  dplyr::select(-uniqid,-country)
+
+
+x <- as.matrix(data_joint_numeric[, -which(names(data_joint_numeric) == "yes_transgender_change_documents")])
+
+x_scaled <- as.matrix(scale(x))
+
+y <- data_joint_numeric$yes_transgender_change_documents
+
+
+set.seed(123) 
+elastic_net_model2 <- cv.glmnet(
+  x_scaled, y,
+  alpha = 0.6,                
+  family = "binomial",
+  lambda = seq(0.02, 1, length.out = 100) 
+)
+
+best_lambda <- elastic_net_model2$lambda.min
+
+elastic_net_coefficients2 <- coef(elastic_net_model2, s = "lambda.min")
+
+non_zero_vars2 <- rownames(elastic_net_coefficients2)[elastic_net_coefficients2[, 1] != 0]
+non_zero_vars2 <- non_zero_vars2[non_zero_vars2 != "(Intercept)"]
+
+print(non_zero_vars2)
+```
+
+#### Check for multicollinearity
+
+```{r}
+selected_vars2 <- non_zero_vars2 
+
+df_selected2 <- data_joint_numeric |> 
+   dplyr::select(all_of(selected_vars2), yes_transgender_change_documents)
+
+lm_model2 <- lm(yes_transgender_change_documents ~ ., data = df_selected2)
+car::vif(lm_model2)
+```
+
+We can find that most variables have a VIF below 5, except `positive_school_inform_diversity_transgender_ind` and `positive_school_inform_diversity_intersex_ind.` So we will delete these redundant variables.
+
+```{r}
+df_selected_reduced2 <- df_selected2 |> 
+  dplyr::select(-positive_school_inform_diversity_transgender_ind,
+                -positive_school_inform_diversity_intersex_ind
+                )
+
+lm_model_reduced2 <- lm(yes_transgender_change_documents ~ ., data = df_selected_reduced2)
+car::vif(lm_model_reduced2)
+```
+
+### Log regression
+
+```{r}
+logit_model2 <- glm(yes_transgender_change_documents ~ ., 
+                   data = df_selected_reduced2, 
+                   family = binomial)
+
+summary(logit_model2)
+
+```
+
+Deleting non significant to see if the AIC reduces
+
+```{r}
+logit_model_reduced <- glm(yes_transgender_change_documents ~ . - positive_census_ethnic_origin_ind 
+                                                                - positive_census_sexual_orientation_ind
+                                                                - positive_school_inform_diversity_disability_ind
+                                                                - comfortable_elected_intersex_ind
+                                                                - comfortable_public_affection_two_men_ind
+                                                                - yes_contact_skin_colour
+                                                                - `Aggregate level of freedom`, 
+                           data = df_selected_reduced2, 
+                           family = binomial)
+AIC(logit_model2)  
+AIC(logit_model_reduced)  
+```
+
+The new AIC **22730.18** is slightly lower than the previous **22735.54**, indicating that after removing the non-significant variables, the overall model fit has improved slightly (as a lower AIC is better). So we will delete these non significant variables in the data set.
+
+```{r}
+non_significant_vars <- c(
+  "positive_census_ethnic_origin_ind",
+  "positive_census_sexual_orientation_ind",
+  "positive_school_inform_diversity_disability_ind",
+  "comfortable_elected_intersex_ind",
+  "comfortable_public_affection_two_men_ind",
+  "yes_contact_skin_colour",
+  "Aggregate level of freedom"
+)
+
+df_selected_reduced3 <- df_selected_reduced2 |> 
+  dplyr::select(-all_of(non_significant_vars))
+```
+
+And the **final log regression** with both individual and country level data is this:\
+
+```{r}
+logit_model_add_country_data <- glm(yes_transgender_change_documents ~ . ,
+                           data = df_selected_reduced3, 
+                           family = binomial)
+summary(logit_model_add_country_data)
+```
+
+#### **Key Findings:**
+
+1.  **Strongly Significant Predictors (p \< 0.001)**
+
+    -   **LGBTQ+ Rights and Attitudes:**
+
+        -   *`positive_lgb_rights_equal_heterosexual_ind`* (β = 0.58, p \< 0.0001): Countries with stronger public support for equal rights for LGBTQ+ individuals are more likely to allow transgender document changes.
+
+        -   *`positive_lgb_no_problem_same_sex_relationship_ind`* (β = 0.30, p \< 0.0001) and *`positive_lgb_allow_same_sex_marriage_ind`* (β = 0.28, p \< 0.0001) also positively impact the likelihood of document change policies.
+
+        -   *`comfortable_elected_transgender_ind`* (β = 0.21, p \< 0.0001) and *`comfortable_elected_homosexual_bisexual_ind`* (β = 0.17, p = 0.0002) suggest that societies that accept LGBTQ+ politicians are more likely to have inclusive transgender policies.
+
+    -   **Third-Gender Recognition and Gender Identity:**
+
+        -   *`yes_third_gender_option`* (β = 2.52, p \< 0.0001): Countries that legally recognize a third gender category have an extremely high likelihood of also allowing transgender document changes.
+
+        -   *`yes_gender`* (β = -0.18, p \< 0.0001): Interestingly, countries that consider gender a legal classification negatively predict transgender document change policies, possibly due to rigid legal frameworks.
+
+    -   **Economic and Political Context:**
+
+        -   *`Gender Development Index`* (β = 10.34, p \< 0.0001): Higher gender development scores are strongly associated with the likelihood of having transgender-inclusive policies.
+
+        -   *I`ncome richest 1 percent (%)`* (β = -0.058, p \< 0.0001): A higher concentration of wealth in the top 1% negatively correlates with transgender rights, suggesting economic inequality might hinder progressive policies.
+
+        -   *`sum_laws`* (β = 0.10, p \< 0.0001): The total number of LGBTQ+ protective laws strongly predicts the likelihood of transgender document changes.
+
+        -   *`positive_energy_clean_ind`* (β = 0.369, p \< 0.0000000114): Countries with stronger public or governmental support for clean energy initiatives (such as renewable energy policies and carbon reduction efforts) are significantly more likely to allow transgender individuals to change their official documents. This suggests that nations with progressive environmental policies often extend similar inclusivity to gender rights.
+
+2.  **Moderately Significant Predictors (p \< 0.01 - 0.05)**
+
+    -   *`positive_life_satisfaction_ind`* (β = 0.10, p = 0.029): A higher general life satisfaction in a country slightly increases the probability of progressive transgender policies.
+
+    -   *`positive_attitudes_roma_integration_ind`* (β = 0.11, p = 0.0025): Societies with more inclusive attitudes toward Roma populations also show higher likelihoods of allowing transgender document changes, suggesting broader acceptance of minority rights.
+
+    -   *`positive_school_inform_diversity_ethnic_ind`* (β = 0.18, p = 0.0014) and *`positive_school_inform_diversity_roma_ind`* (β = 0.14, p = 0.0045): Education on diversity positively correlates with transgender policies.
+
+    -   *`positive_energy_affordable_ind`* (β = 0.141, p = 0.0196): Countries where energy is more affordable for the general population are also more likely to support transgender document changes. This may indicate a broader commitment to economic accessibility and social equity, which could extend to LGBTQ+ rights.
+
+3.  **Less Significant Predictors (p \> 0.05 but \< 0.10)**
+
+    -   *`yes_contact_disabled`* (β = 0.10, p = 0.0032): Countries where individuals frequently interact with disabled people tend to have more inclusive policies, possibly indicating higher overall societal inclusivity.
+
+4.  **Interesting findings among non-significant variables:**
+
+    -   *`yes_contact_skin_colour`* (β = 0.048, p = 0.2762): This variable indicates whether respondents have had social contact with people of different skin colors. While the proportion of immigrants (% immigrants) is a significant predictor in the model, this variable does not reach statistical significance. And the correlation between *`yes_contact_skin_colour`* and *`% immigrants`* is low (0.18), so the multicollinearity is not the main reason of the insignificance of *`yes_contact_skin_colour`*.\
+        This may suggest that the acceptance of people with different skin colors is not strongly linked to transgender rights, or that the way this variable is measured does not accurately reflect a country's overall culture of inclusivity.\
+        Since *`yes_contact_ethnic_origin`* remained significant while *`yes_contact_skin_colour`* did not, it might be interesting to explore whether ethnicity-based contact is a better predictor of transgender document changes than skin color-based contact.
+
+    -   *`Aggregate level of freedom`* (β = -0.001, p = 0.6491): This variable measures a country's overall level of freedom, including aspects such as freedom of speech and democracy index. Surprisingly, it is not significant in the model and even has a slightly negative coefficient (indicating that higher levels of freedom are weakly associated with a lower likelihood of allowing transgender document changes). This suggests that general democratic freedoms do not necessarily determine transgender legal rights, and that specific gender policies and socio-cultural factors may play a more crucial role. For example, some countries may rank high in economic and speech freedoms but remain conservative in social policies.
+
+    -   *`religion_denomination`*: This variable was excluded by elastic net, likely because its effect overlapped with other societal factors like individualism (IDV), or gender development index (GDI). Its variability within religious groups and lack of unique predictive power may have reduced its importance in the model.
+
+#### **Overall Model Interpretation:**
+
+The model identifies key **societal, economic, and policy-related factors** that predict whether a country allows **transgender individuals to change their official documents**. Strong predictors include **public support for LGBTQ+ rights, third-gender recognition, gender development levels,** and the overall **number of pro-LGBTQ+ laws**. Interestingly, **progressive environmental policies** and **economic equality** also correlate with **transgender-inclusive policies**, suggesting a broader pattern of **social progressiveness**. However, **general measures of freedom** and **contact with people of different skin colors** do not significantly predict **transgender rights**, highlighting that **inclusivity in one domain does not always translate to another**.
+
+### Generalized linear mixed model with both individual and country level features
+
+We will run a generalized linear mixed model after introducing country-level data, in order to discover these country-level data are sufficient to explain the random effects or not.
+
+We first recover the variable nationality in the data set:
+
+```{r}
+uniqid_nationality<- data_joint |> 
+  dplyr::select(country,nationality)
+
+data_numeric <- data_joint2[, sapply(data_joint2, is.numeric)]
+data_final_selected <- data_numeric |> 
+  dplyr::select(country, all_of(selected_vars2), yes_transgender_change_documents) |> 
+  dplyr::select(-positive_school_inform_diversity_transgender_ind,
+                -positive_school_inform_diversity_intersex_ind) |> 
+  dplyr::select(-all_of(non_significant_vars))
+
+data_selected_with_nationality<- data_final_selected |> 
+  left_join(uniqid_nationality, by="country") |> 
+  dplyr::select(-country)
+
+```
+
+```{r}
+
+# Setting up parallel computing
+num_cores <- detectCores() - 1
+plan(multisession, workers = num_cores)
+options(mem.maxVSize = 32 * 1024^3)
+Sys.setenv(R_MAX_VSIZE="32GB")
+
+#sample the data
+set.seed(123)
+sample_data <- data_selected_with_nationality[sample(1:nrow(data_selected_with_nationality), 
+                                                      size = floor(0.0005 * nrow(data_selected_with_nationality))), ]
+
+#Selecting only variables with high significance (0 ‘***’ )
+glmm_model_final <- glmer(yes_transgender_change_documents ~ 
+positive_lgb_no_problem_same_sex_relationship_ind+
+positive_lgb_rights_equal_heterosexual_ind+
+positive_lgb_allow_same_sex_marriage_ind+
+positive_energy_clean_ind+
+yes_contact_lgb+
+positive_census_info_disability_ind+
+comfortable_elected_homosexual_bisexual_ind+
+comfortable_elected_transgender_ind+
+yes_third_gender_option+
+`Gender Development Index`+
+`Income richest 1 percent (%)`+
+sum_laws + (1 | nationality), 
+                          data = sample_data, 
+                          family = binomial, 
+                          control = glmerControl(optimizer = "bobyqa", 
+                                                optCtrl = list(maxfun = 1000000)))
+
+
+plan(sequential)
+```
+
+```{r}
+summary(glmm_model_final)
+```
+
+We can observe that **σ_random² reduces into 0.1054**, and **ICC reduces into 0.0954**, which means that about **9.54% of the variance comes from the random effect (nationality**), less than **26.57% of ICC from the previous glmm model without national level data**. This shows that these added country-level data have covered an important part of differences among countries.
+
+This plot shows the new distribution of random intercepts, and we can observe **the scope of x axis reduces from (-2,2) to (-0.75, 0.50). This visualizes perfectly that more country-level variability is explained now**.
+
+```{r}
+ranef_country2 <- ranef(glmm_model_final)$nationality
+
+ranef_country2_df <- data.frame(
+  nationality = rownames(ranef_country2),
+  effect = ranef_country2[, "(Intercept)"]
+)
+
+ranef_country2_df <- ranef_country2_df |> 
+  arrange(effect)
+
+ggplot(ranef_country2_df, aes(x = reorder(nationality, effect), y = effect)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Country-Level Random Intercepts (Nationality)",
+    subtitle = "Effect on Log-Odds of Supporting Transgender Change Documents",
+    x = "Nationality",
+    y = "Random Intercept Effect"
+  ) +
+  theme_minimal()
+```
+
+## Question 2: Developing a predictive model for other countries
+
+### Splitting Data into Training and Testing Sets
+
+```{r}
+df_selected_reduced3$yes_transgender_change_documents <- as.factor(df_selected_reduced3$yes_transgender_change_documents)
+set.seed(123)
+trainIndex <- createDataPartition(df_selected_reduced3$yes_transgender_change_documents, p = 0.7, list = FALSE)
+train_data2 <- df_selected_reduced3[trainIndex, ]
+test_data2  <- df_selected_reduced3[-trainIndex, ]
+```
+
+### Checking imbalanced data
+
+Checking Class Distribution in Training and Testing Sets to see if the target variable is balanced. Since the percentages of the class are more or less the same, we would not conduct the process of balancing the target variable.
+
+```{r}
+table(train_data2$yes_transgender_change_documents)
+prop.table(table(train_data2$yes_transgender_change_documents))
+table(test_data2$yes_transgender_change_documents)
+prop.table(table(test_data2$yes_transgender_change_documents))
+```
+
+### Training Logistic Regression Model and Making Predictions
+
+```{r}
+
+logit_model2 <- glm(yes_transgender_change_documents ~ ., data = train_data2, family = binomial)
+
+logit_preds <- predict(logit_model2, test_data2, type = "response")
+logit_class_preds <- ifelse(logit_preds > 0.5, 1, 0) 
+
+```
+
+### Setting Up Cross-Validation Parameters
+
+```{r}
+set.seed(123)
+control <- trainControl(method = "cv", number = 10)
+```
+
+### Hyperparameter Tuning for Random Forest with Cross-Validation
+
+In the plot we can see the best hyperparameter is 5, we would use it in the folllowing procedures.
+
+```{r}
+set.seed(123)
+tune_grid <- expand.grid(mtry = c(2, 5, 10, 15))
+rf_tuned <- train(yes_transgender_change_documents ~ ., 
+               data = train_data2,                    
+               method = "rf",
+               trControl = control,
+               tuneGrid = tune_grid,
+               ntree = 500)
+plot(rf_tuned)
+```
+
+### Training Random Forest Model and Making Predictions
+
+```{r}
+
+colnames(train_data2) <- gsub("% immigrants", "immigrants_percent", colnames(train_data2))
+colnames(train_data2) <- gsub("Gender Development Index", "gender_development_index", colnames(train_data2))
+colnames(train_data2)[colnames(train_data2) == "Income richest 1 percent (%)"] <- "income_richest_1_percent"
+
+
+rf_model <- randomForest(yes_transgender_change_documents ~ ., data = train_data2, ntree = 500, mtry = 5, importance = TRUE)
+
+
+colnames(test_data2) <- gsub("% immigrants", "immigrants_percent", colnames(test_data2))
+colnames(test_data2) <- gsub("Gender Development Index", "gender_development_index", colnames(test_data2))
+colnames(test_data2)[colnames(test_data2) == "Income richest 1 percent (%)"] <- "income_richest_1_percent"
+
+rf_preds <- predict(rf_model, test_data2, type = "prob")[,2]
+
+```
+
+### Visualizing Predicted Probability Distribution
+
+This plot visualizes the predicted probability distributions for Logistic Regression (pink) and Random Forest (blue). The x-axis represents the predicted probabilities of supporting transgender document changes, while the y-axis shows the density of these predictions. Both models exhibit a bimodal distribution, meaning they confidently classify most observations as either close to 0 (not supportive) or close to 1 (supportive). However, Random Forest has sharper peaks near 0 and 1, indicating stronger confidence in its classifications, whereas Logistic Regression has a smoother spread, suggesting more uncertainty in some cases. This implies that Random Forest may be better for clear classification, while Logistic Regression provides a more continuous probability estimation.
+
+```{r}
+df_preds <- data.frame(
+  Model = rep(c("Logistic Regression", "Random Forest"), each = length(logit_preds)),
+  Predicted_Prob = c(logit_preds, rf_preds)
+)
+
+ggplot(df_preds, aes(x = Predicted_Prob, fill = Model)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Predicted Probability Distribution", x = "Predicted Probability", y = "Density") +
+  theme_minimal()
+```
+
+### Evaluating the models
+
+Compare AUC-ROC The AUC-ROC of Random forest model is higher than logit model
+
+```{r}
+logit_auc <- roc(test_data2$yes_transgender_change_documents, logit_preds)
+logit_auc_value <- auc(logit_auc)
+logit_auc
+logit_auc_value
+
+rf_auc <- roc(test_data2$yes_transgender_change_documents, rf_preds)
+rf_auc_value <- auc(rf_auc)
+rf_auc
+rf_auc_value
+
+ggplot() +
+  geom_line(data = data.frame(FPR = 1 - logit_auc$specificities, TPR = logit_auc$sensitivities), 
+            aes(x = FPR, y = TPR), color = "blue", linewidth = 1) +
+  geom_line(data = data.frame(FPR = 1 - rf_auc$specificities, TPR = rf_auc$sensitivities), 
+            aes(x = FPR, y = TPR), color = "red", linewidth = 1) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray") +
+  labs(title = "ROC Curve: Logistic Regression vs Random Forest",
+       x = "False Positive Rate (1 - Specificity)", 
+       y = "True Positive Rate (Sensitivity)") +
+  annotate("text", x = 0.6, y = 0.2, label = paste("Logistic AUC:", round(logit_auc_value, 3)), color = "blue") +
+  annotate("text", x = 0.6, y = 0.1, label = paste("Random Forest AUC:", round(rf_auc_value, 3)), color = "red") +
+  theme_minimal()
+
+results_df <- data.frame(
+  Model = c("Logistic Regression", "Random Forest"),
+  AUC = c(logit_auc_value, rf_auc_value)
+)
+print(results_df)
+
+```
+
+Compare accuracy The Accuracy of Random forest model is higher than logit model
+
+```{r}
+test_data2$yes_transgender_change_documents <- as.factor(test_data2$yes_transgender_change_documents)
+
+logit_class_preds <- factor(ifelse(logit_preds > 0.5, "1", "0"), levels = c("0", "1"))
+
+conf_matrix_logit <- confusionMatrix(logit_class_preds, test_data2$yes_transgender_change_documents, positive = "1")
+
+logit_accuracy <- conf_matrix_logit$overall["Accuracy"]
+print(logit_accuracy)
+
+
+rf_preds <- predict(rf_model, test_data2, type = "prob")[,2]
+rf_class_preds <- factor(ifelse(rf_preds > 0.5, "1", "0"), levels = c("0", "1"))
+
+conf_matrix_rf <- confusionMatrix(rf_class_preds, test_data2$yes_transgender_change_documents, positive = "1")
+
+rf_accuracy <- conf_matrix_rf$overall["Accuracy"]
+print(rf_accuracy)
+
+```
+
+Compare F1 score The F1 socre of Random forest model is higher than logit model
+
+```{r}
+precision_logit <- conf_matrix_logit$byClass["Precision"]
+recall_logit <- conf_matrix_logit$byClass["Recall"]
+precision_rf <- conf_matrix_rf$byClass["Precision"]
+recall_rf <- conf_matrix_rf$byClass["Recall"]
+
+f1_logit <- 2 * (precision_logit * recall_logit) / (precision_logit + recall_logit)
+f1_rf <- 2 * (precision_rf * recall_rf) / (precision_rf + recall_rf)
+
+# Print the  F1-score
+cat("Logistic Regression F1-score:", round(f1_logit, 3), "\n")
+cat("Random Forest F1-score:", round(f1_rf, 3), "\n")
+```
+
+In summary, the performance of random forest model is better than the other one since the rf model won in all the three evaluation ways.
